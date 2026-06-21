@@ -1,7 +1,7 @@
 import os
 from config import APP_NAME
 from PyQt6.QtCore import Qt, QSettings, pyqtSignal
-from PyQt6.QtGui import QFont, QTextBlockFormat, QTextCharFormat, QKeyEvent, QTextCursor
+from PyQt6.QtGui import QColor, QFont, QTextBlockFormat, QTextCharFormat, QKeyEvent, QTextCursor
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
     QTextEdit, QLabel, QSlider,
