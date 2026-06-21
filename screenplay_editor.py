@@ -70,14 +70,22 @@ _OPEN_FILTER = (
 )
 
 # CSS class names → element types (normalised: lowercase, hyphens/underscores removed).
-# Covers Celtx, Highland, Final Draft HTML exports, and common hand-written formats.
+# Covers Celtx, Highland, Final Draft HTML exports, StudioBinder, and common formats.
 _CLASS_MAP: dict[str, int] = {
+    # Generic / Celtx / Highland / Final Draft
     "sceneheading": SCENE,  "scene": SCENE, "shot": SCENE, "slugline": SCENE,
     "action":       ACTION,
     "character":    CHARACTER,
     "dialog":       DIALOGUE, "dialogue": DIALOGUE,
     "parenthetical": PAREN,  "paren": PAREN,
     "transition":   TRANSITION,
+    # StudioBinder HTML export
+    "divtype0": SCENE,
+    "divtype2": ACTION,
+    "divtype3": CHARACTER,
+    "divtype4": PAREN,
+    "divtype5": DIALOGUE,
+    "divtype6": TRANSITION,
 }
 
 # Standard scene heading prefixes recognised by the fountain spec.
@@ -244,21 +252,28 @@ def _parse_html_content(html: str) -> list[tuple[int, str]]:
             super().__init__(convert_charrefs=True)
             self.result: list[tuple[int, str]] = []
             self._el: int | None = None
+            self._open_tag: str | None = None
             self._buf: list[str] = []
 
         def handle_starttag(self, tag: str, attrs: list) -> None:
-            if tag == "p":
-                raw = dict(attrs).get("class", "").lower().split()[0]
-                cls = raw.replace("-", "").replace("_", "")
-                self._el = _CLASS_MAP.get(cls)
-                self._buf = []
+            if tag not in ("p", "div") or self._el is not None:
+                return
+            parts = dict(attrs).get("class", "").lower().split()
+            raw = parts[0] if parts else ""
+            cls = raw.replace("-", "").replace("_", "")
+            el  = _CLASS_MAP.get(cls)
+            if el is not None:
+                self._el       = el
+                self._open_tag = tag
+                self._buf      = []
 
         def handle_endtag(self, tag: str) -> None:
-            if tag == "p" and self._el is not None:
+            if tag == self._open_tag and self._el is not None:
                 text = "".join(self._buf).strip().replace("\xa0", " ")
                 if text:
                     self.result.append((self._el, text))
-                self._el = None
+                self._el       = None
+                self._open_tag = None
 
         def handle_data(self, data: str) -> None:
             if self._el is not None:
