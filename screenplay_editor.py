@@ -618,7 +618,10 @@ class ScreenplayEditor(QWidget):
         edit = self._current_edit()
         if edit:
             self._load_elements(edit, elements)
-            self._paths[edit] = path
+            # Only track the path for native fountain files so that Save doesn't
+            # overwrite a .celtx / .html source file with fountain text.
+            if ext == ".fountain":
+                self._paths[edit] = path
             self._tabs.setTabText(
                 self._tabs.currentIndex(),
                 os.path.splitext(os.path.basename(path))[0]
