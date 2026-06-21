@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import (
 # A status bar at the bottom holds a scale slider that zooms all tabs together.
 
 class TextEditor(QWidget):
-    name = "Text Editor"
+    name = "Note"
     _BASE_FONT_SIZE = 12   # point size at 100 %
 
     def __init__(self):
@@ -25,6 +25,8 @@ class TextEditor(QWidget):
         self._tabs.setTabsClosable(True)
         self._tabs.tabCloseRequested.connect(self._close_tab)
         layout.addWidget(self._tabs)
+
+        self._untitled_counter = 0   # increments with each new tab, never resets
 
         # ── Status bar ───────────────────────────────────────────────────────
         status = QWidget()
@@ -54,11 +56,12 @@ class TextEditor(QWidget):
         self._add_tab(closable=False)
 
     def _add_tab(self, closable=True):
+        self._untitled_counter += 1
         editor = QTextEdit()
         font = editor.font()
         font.setPointSize(self._current_font_size())
         editor.setFont(font)
-        idx = self._tabs.addTab(editor, "Untitled")
+        idx = self._tabs.addTab(editor, f"Untitled {self._untitled_counter}")
         if not closable:
             bar = self._tabs.tabBar()
             assert bar is not None

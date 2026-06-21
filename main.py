@@ -18,8 +18,8 @@ from text_editor import TextEditor
 # Add new editor types here — they'll automatically appear in every Panel's
 # type selector dropdown as long as they are added to the EDITORS list.
 
-class ScriptEditor(QTextEdit):
-    name = "Script Editor"
+class ScreenplayEditor(QTextEdit):
+    name = "Screenplay"
 
 class CardEditor(QTextEdit):
     name = "Card"
@@ -42,7 +42,7 @@ class ImageViewer(QLabel):
 
 
 # Central registry — order here controls order in the dropdown.
-EDITORS = [TextEditor, ScriptEditor, CardEditor, TimelineEditor, ScratchBoardEditor, CharacterEditor, ImageViewer]
+EDITORS = [TextEditor, ScreenplayEditor, CardEditor, TimelineEditor, ScratchBoardEditor, CharacterEditor, ImageViewer]
 
 
 # ── Panel ─────────────────────────────────────────────────────────────────────
