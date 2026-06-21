@@ -7,8 +7,10 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QMenuBar,
     QSplitter, QStackedWidget,
     QWidget, QVBoxLayout, QHBoxLayout,
-    QComboBox, QTextEdit, QLabel
+    QComboBox, QTextEdit, QLabel,
+    QToolButton, QMenu
 )
+from text_editor import TextEditor
 
 
 # ── Editors ───────────────────────────────────────────────────────────────────
@@ -16,13 +18,20 @@ from PyQt6.QtWidgets import (
 # Add new editor types here — they'll automatically appear in every Panel's
 # type selector dropdown as long as they are added to the EDITORS list.
 
-class TextEditor(QTextEdit):
-    name = "Text Editor"
-
-
 class ScriptEditor(QTextEdit):
     name = "Script Editor"
 
+class CardEditor(QTextEdit):
+    name = "Card"
+
+class TimelineEditor(QTextEdit):
+    name = "Timeline Editor"
+
+class ScratchBoardEditor(QTextEdit):
+    name = "Scratch Board"
+    
+class CharacterEditor(QTextEdit):
+    name = "Character Editor"
 
 class ImageViewer(QLabel):
     name = "Image Viewer"
@@ -33,7 +42,7 @@ class ImageViewer(QLabel):
 
 
 # Central registry — order here controls order in the dropdown.
-EDITORS = [TextEditor, ScriptEditor, ImageViewer]
+EDITORS = [TextEditor, ScriptEditor, CardEditor, TimelineEditor, ScratchBoardEditor, CharacterEditor, ImageViewer]
 
 
 # ── Panel ─────────────────────────────────────────────────────────────────────
@@ -63,7 +72,31 @@ class Panel(QWidget):
             self._type_selector.addItem(cls.name)
         self._type_selector.currentIndexChanged.connect(self._on_type_changed)
         header_layout.addWidget(self._type_selector)
+
+        # ── File menu button ─────────────────────────────────────────────────
+        file_btn = QToolButton()
+        file_btn.setText("File")
+        file_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        file_menu = QMenu(file_btn)
+        file_menu.addAction("New",     self._on_file_new)
+        file_menu.addAction("Open",    self._on_file_open)
+        file_menu.addSeparator()
+        file_menu.addAction("Save",    self._on_file_save)
+        file_menu.addAction("Save As", self._on_file_save_as)
+        file_menu.addSeparator()
+        file_menu.addAction("Close",   self._on_file_close)
+        file_btn.setMenu(file_menu)
+        header_layout.addWidget(file_btn)
+
         header_layout.addStretch()
+
+        # ── Fullscreen button ────────────────────────────────────────────────
+        # Square button — clicking it calls the workspace callback registered
+        # via set_fullscreen_callback() to expand this panel to fill the workspace.
+        self._fullscreen_btn = QToolButton()
+        self._fullscreen_btn.setText("⛶")
+        self._fullscreen_btn.setFixedSize(22, 22)
+        header_layout.addWidget(self._fullscreen_btn)
 
         # ── Editor stack ─────────────────────────────────────────────────────
         # One widget per editor type; only the active one is visible.
@@ -80,6 +113,35 @@ class Panel(QWidget):
     def set_editor(self, index):
         """Set the active editor by EDITORS list index."""
         self._type_selector.setCurrentIndex(index)
+
+    def set_fullscreen_callback(self, callback):
+        """Register the callable that fires when the fullscreen button is clicked."""
+        self._fullscreen_btn.clicked.connect(lambda _: callback())
+
+    def _on_file_new(self):
+        editor = self._stack.currentWidget()
+        if isinstance(editor, TextEditor):
+            editor.new_file()
+
+    def _on_file_open(self):
+        editor = self._stack.currentWidget()
+        if isinstance(editor, TextEditor):
+            editor.open_file()
+
+    def _on_file_save(self):
+        editor = self._stack.currentWidget()
+        if isinstance(editor, TextEditor):
+            editor.save_file()
+
+    def _on_file_save_as(self):
+        editor = self._stack.currentWidget()
+        if isinstance(editor, TextEditor):
+            editor.save_file_as()
+
+    def _on_file_close(self):
+        editor = self._stack.currentWidget()
+        if isinstance(editor, TextEditor):
+            editor.close_current_tab()
 
 
 # ── Workspace ─────────────────────────────────────────────────────────────────
@@ -114,7 +176,12 @@ class WorkspaceWidget(QWidget):
         self._splitter = None
         self._all_splitters = []
         self._current_layout = None
-        self._layout_sizes = {}   # saved splitter sizes keyed by layout name
+        self._layout_sizes = {}          # saved splitter sizes keyed by layout name
+        self._pre_fullscreen_restore = None  # callable to return from oneLayout1
+
+        # Give each panel a callback so its fullscreen button can reach back here.
+        for p in self._panels:
+            p.set_fullscreen_callback(lambda panel=p: self.oneLayout1(panel))
 
         # Default editor types for the three-panel layout.
         self._panels[0].set_editor(0)   # Text Editor   — top-left
@@ -233,6 +300,34 @@ class WorkspaceWidget(QWidget):
         # [s, top] order matters: _equalize and size restore process the outer
         # vertical split first so top's height is known before its width is set.
         self._rebuild(s, [s, top], 'three')
+
+    def oneLayout1(self, panel):
+        """Toggle between expanding a panel to fill the workspace and restoring the previous layout.
+
+        First call from any multi-panel layout: saves a restore callback and goes fullscreen.
+        Second call (while already in 'one'): fires the stored callback to return to the
+        previous layout with its saved splitter sizes intact.
+        """
+        if self._current_layout == 'one' and self._pre_fullscreen_restore:
+            restore = self._pre_fullscreen_restore
+            self._pre_fullscreen_restore = None
+            restore()
+            return
+
+        # Map the current layout name to its builder so we can restore it later.
+        builders = {
+            'twov':  self.verticalLayout1,
+            'twoh':  self.horizontalLayout1,
+            'three': self.threePanelLayout1,
+        }
+        assert self._current_layout is not None
+        self._pre_fullscreen_restore = builders.get(self._current_layout)
+
+        self._save_current_sizes()
+        self._detach_all()
+        s = QSplitter(Qt.Orientation.Horizontal)
+        s.addWidget(panel)
+        self._rebuild(s, [s], 'one')
 
 
 # ── Main Window ───────────────────────────────────────────────────────────────
