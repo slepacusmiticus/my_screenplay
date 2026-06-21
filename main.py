@@ -1,6 +1,7 @@
 import sys
 import signal
-from PyQt6.QtCore import Qt
+from typing import Protocol, runtime_checkable
+from PyQt6.QtCore import Qt, QSettings
 from config import APP_NAME, WINDOW_WIDTH, WINDOW_HEIGHT
 from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import (
@@ -8,15 +9,26 @@ from PyQt6.QtWidgets import (
     QSplitter, QStackedWidget,
     QWidget, QVBoxLayout, QHBoxLayout,
     QComboBox, QLabel,
-    QToolButton, QMenu
+    QToolButton, QMenu,
+    QDialog, QDialogButtonBox, QFileDialog, QLineEdit, QPushButton
 )
 from textEditors import (
-    TabbedEditor,
     NoteEditor, NovelEditor, ScratchPadEditor,
     TimelineEditor, ScratchBoardEditor, CharacterEditor
 )
 from screenplay_editor import ScreenplayEditor, ELEMENT_NAMES, ELEMENT_ORDER
 from card_editor import CardEditor
+
+
+# Structural protocol satisfied by TabbedEditor, ScreenplayEditor, and CardEditor.
+# Using runtime_checkable so isinstance() narrows the type in Panel's file handlers.
+@runtime_checkable
+class _FileEditor(Protocol):
+    def new_file(self) -> None: ...
+    def open_file(self) -> None: ...
+    def save_file(self) -> None: ...
+    def save_file_as(self) -> None: ...
+    def close_current_tab(self) -> None: ...
 
 
 # ── Editors ───────────────────────────────────────────────────────────────────
@@ -151,27 +163,27 @@ class Panel(QWidget):
 
     def _on_file_new(self):
         editor = self._stack.currentWidget()
-        if isinstance(editor, TabbedEditor):
+        if isinstance(editor, _FileEditor):
             editor.new_file()
 
     def _on_file_open(self):
         editor = self._stack.currentWidget()
-        if isinstance(editor, TabbedEditor):
+        if isinstance(editor, _FileEditor):
             editor.open_file()
 
     def _on_file_save(self):
         editor = self._stack.currentWidget()
-        if isinstance(editor, TabbedEditor):
+        if isinstance(editor, _FileEditor):
             editor.save_file()
 
     def _on_file_save_as(self):
         editor = self._stack.currentWidget()
-        if isinstance(editor, TabbedEditor):
+        if isinstance(editor, _FileEditor):
             editor.save_file_as()
 
     def _on_file_close(self):
         editor = self._stack.currentWidget()
-        if isinstance(editor, TabbedEditor):
+        if isinstance(editor, _FileEditor):
             editor.close_current_tab()
 
 
@@ -361,6 +373,60 @@ class WorkspaceWidget(QWidget):
         self._rebuild(s, [s], 'one')
 
 
+# ── Settings dialog ───────────────────────────────────────────────────────────
+
+class _UISettingsDialog(QDialog):
+    """Popup for UI preferences — currently just the default workspace folder."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("UI Settings")
+        self.setMinimumWidth(480)
+
+        self._settings = QSettings(APP_NAME, APP_NAME)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(8)
+
+        # ── Workspace folder row ─────────────────────────────────────────────
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Workspace folder:"))
+
+        self._folder_edit = QLineEdit()
+        self._folder_edit.setText(self._settings.value("workspace_folder", ""))
+        self._folder_edit.setPlaceholderText("(not set — uses current directory)")
+        row.addWidget(self._folder_edit)
+
+        browse_btn = QPushButton("Browse…")
+        browse_btn.clicked.connect(self._browse)
+        row.addWidget(browse_btn)
+
+        layout.addLayout(row)
+
+        # ── OK / Cancel ──────────────────────────────────────────────────────
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self._save_and_accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _browse(self) -> None:
+        start = self._folder_edit.text() or ""
+        path = QFileDialog.getExistingDirectory(self, "Select Workspace Folder", start)
+        if path:
+            self._folder_edit.setText(path)
+
+    def _save_and_accept(self) -> None:
+        self._settings.setValue("workspace_folder", self._folder_edit.text().strip())
+        self.accept()
+
+    @staticmethod
+    def workspace_folder() -> str:
+        """Return the saved workspace folder path (empty string if not set)."""
+        return QSettings(APP_NAME, APP_NAME).value("workspace_folder", "")
+
+
 # ── Main Window ───────────────────────────────────────────────────────────────
 
 class MyMainWindow(QMainWindow):
@@ -383,13 +449,21 @@ class MyMainWindow(QMainWindow):
 
         mb.addMenu("Edit")
         mb.addMenu("View")
-        mb.addMenu("Help")
+        
 
         layout_menu = mb.addMenu("Layout")
         assert layout_menu
-        layout_menu.addAction(self._action("twoPanVert1_Action",   self._workspace.verticalLayout1))
-        layout_menu.addAction(self._action("twoPanHoriz1_Action",  self._workspace.horizontalLayout1))
-        layout_menu.addAction(self._action("threePanLayout1_Action", self._workspace.threePanelLayout1))
+        layout_menu.addAction(self._action("2_Panels_Vert_1",   self._workspace.verticalLayout1))
+        layout_menu.addAction(self._action("2_Panels_Horiz_1",  self._workspace.horizontalLayout1))
+        layout_menu.addAction(self._action("3Panels_1", self._workspace.threePanelLayout1))
+
+        settings_menu = mb.addMenu("Settings")
+        assert settings_menu
+        settings_menu.addAction(self._action("UI", self._on_settings_ui))
+        mb.addMenu("Help")
+
+    def _on_settings_ui(self) -> None:
+        _UISettingsDialog(self).exec()
 
     def _action(self, label, slot):
         """Convenience: create a QAction with a connected slot."""
