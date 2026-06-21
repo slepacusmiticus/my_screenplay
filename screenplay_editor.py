@@ -1,6 +1,6 @@
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QFont, QTextBlockFormat, QTextCharFormat, QKeyEvent, QTextCursor
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QTextEdit, QLabel, QTabWidget, QTabBar
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QTextEdit, QLabel, QSlider, QTabWidget, QTabBar
 
 
 # ── Element types ─────────────────────────────────────────────────────────────
@@ -175,6 +175,7 @@ class ScreenplayEdit(QTextEdit):
 
 class ScreenplayEditor(QWidget):
     name = "Screenplay"
+    _BASE_FONT_SIZE = 12   # Courier New point size at 100 %
 
     # Emitted when the active tab's cursor enters a paragraph with a new element
     # type. Connected by Panel to keep the header combo in sync.
@@ -199,12 +200,22 @@ class ScreenplayEditor(QWidget):
         status.setFixedHeight(24)
         sl = QHBoxLayout(status)
         sl.setContentsMargins(6, 0, 6, 0)
-        sl.setSpacing(0)
+        sl.setSpacing(6)
 
-        self._el_label = QLabel(ELEMENT_NAMES[SCENE])
-        sl.addWidget(self._el_label)
         sl.addStretch()
-        sl.addWidget(QLabel("Tab / Shift-Tab: change element type"))
+        sl.addWidget(QLabel("Scale:"))
+
+        self._scale_slider = QSlider(Qt.Orientation.Horizontal)
+        self._scale_slider.setRange(50, 200)
+        self._scale_slider.setValue(100)
+        self._scale_slider.setFixedWidth(120)
+        self._scale_slider.setTickInterval(50)
+        self._scale_slider.valueChanged.connect(self._on_scale_changed)
+        sl.addWidget(self._scale_slider)
+
+        self._scale_label = QLabel("100%")
+        self._scale_label.setFixedWidth(36)
+        sl.addWidget(self._scale_label)
 
         layout.addWidget(status)
 
@@ -215,9 +226,25 @@ class ScreenplayEditor(QWidget):
         w = self._tabs.currentWidget()
         return w if isinstance(w, ScreenplayEdit) else None
 
+    def _current_font_size(self) -> int:
+        return max(6, int(self._BASE_FONT_SIZE * self._scale_slider.value() / 100))
+
+    def _on_scale_changed(self, value: int) -> None:
+        self._scale_label.setText(f"{value}%")
+        size = max(6, int(self._BASE_FONT_SIZE * value / 100))
+        for i in range(self._tabs.count()):
+            w = self._tabs.widget(i)
+            if isinstance(w, ScreenplayEdit):
+                font = w.font()
+                font.setPointSize(size)
+                w.setFont(font)
+
     def _add_tab(self, closable: bool = True) -> None:
         self._untitled_counter += 1
         edit = ScreenplayEdit()
+        font = edit.font()
+        font.setPointSize(self._current_font_size())
+        edit.setFont(font)
         # cursorPositionChanged handles click/arrow navigation between blocks.
         # element_type_applied handles Tab/Enter, which either don't move the
         # cursor (Tab) or fire cursorPositionChanged before the format is set (Enter).
@@ -240,22 +267,17 @@ class ScreenplayEditor(QWidget):
     def _on_tab_switched(self, _: int) -> None:
         edit = self._current_edit()
         if edit:
-            el = edit.current_element()
-            self._el_label.setText(ELEMENT_NAMES.get(el, ""))
-            self.element_changed.emit(el)
+            self.element_changed.emit(edit.current_element())
 
     def _on_cursor_moved(self, edit: ScreenplayEdit) -> None:
         # Only update when the signaling edit is the currently visible tab.
         if self._tabs.currentWidget() is edit:
-            el = edit.current_element()
-            self._el_label.setText(ELEMENT_NAMES.get(el, ""))
-            self.element_changed.emit(el)
+            self.element_changed.emit(edit.current_element())
 
     def _on_element_applied(self, edit: ScreenplayEdit, el: int) -> None:
         # Called immediately after Tab/Enter sets a new element type — bypasses
         # the cursorPositionChanged timing issues for those two key events.
         if self._tabs.currentWidget() is edit:
-            self._el_label.setText(ELEMENT_NAMES.get(el, ""))
             self.element_changed.emit(el)
 
     def current_element(self) -> int:
