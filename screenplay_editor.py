@@ -1,6 +1,6 @@
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QFont, QTextBlockFormat, QTextCharFormat, QKeyEvent, QTextCursor
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QTextEdit, QLabel, QSlider, QTabWidget, QTabBar
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QTextEdit, QLabel, QSlider, QInputDialog, QTabWidget, QTabBar
 
 
 # ── Element types ─────────────────────────────────────────────────────────────
@@ -191,6 +191,7 @@ class ScreenplayEditor(QWidget):
         self._tabs.setTabsClosable(True)
         self._tabs.tabCloseRequested.connect(self._close_tab)
         self._tabs.currentChanged.connect(self._on_tab_switched)
+        self._tabs.tabBarDoubleClicked.connect(self._on_tab_double_clicked)
         layout.addWidget(self._tabs)
 
         self._untitled_counter = 0   # increments with each new tab, never resets
@@ -263,6 +264,12 @@ class ScreenplayEditor(QWidget):
 
     def _close_tab(self, index: int) -> None:
         self._tabs.removeTab(index)
+
+    def _on_tab_double_clicked(self, index: int) -> None:
+        current = self._tabs.tabText(index)
+        name, ok = QInputDialog.getText(self, "Rename Tab", "Name:", text=current)
+        if ok and name.strip():
+            self._tabs.setTabText(index, name.strip())
 
     def _on_tab_switched(self, _: int) -> None:
         edit = self._current_edit()

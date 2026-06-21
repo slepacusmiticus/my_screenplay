@@ -2,7 +2,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
     QTextEdit, QLabel,
-    QTabWidget, QTabBar, QSlider
+    QTabWidget, QTabBar, QSlider, QInputDialog
 )
 
 
@@ -24,6 +24,7 @@ class CardEditor(QWidget):
         self._tabs = QTabWidget()
         self._tabs.setTabsClosable(True)
         self._tabs.tabCloseRequested.connect(self._close_tab)
+        self._tabs.tabBarDoubleClicked.connect(self._on_tab_double_clicked)
         layout.addWidget(self._tabs)
 
         self._untitled_counter = 0   # increments with each new tab, never resets
@@ -70,6 +71,12 @@ class CardEditor(QWidget):
 
     def _close_tab(self, index):
         self._tabs.removeTab(index)
+
+    def _on_tab_double_clicked(self, index: int) -> None:
+        current = self._tabs.tabText(index)
+        name, ok = QInputDialog.getText(self, "Rename Tab", "Name:", text=current)
+        if ok and name.strip():
+            self._tabs.setTabText(index, name.strip())
 
     def _current_font_size(self):
         return max(6, int(self._BASE_FONT_SIZE * self._scale_slider.value() / 100))
