@@ -1,17 +1,27 @@
 from config import APP_NAME
 from PyQt6.QtCore import Qt, QSettings
-from PyQt6.QtGui import QImage, QPixmap
+from PyQt6.QtGui import QColor, QImage, QPixmap
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QSlider,
-    QScrollArea, QFileDialog, QMessageBox
+    QScrollArea, QFileDialog, QMessageBox, QColorDialog
 )
 
 try:
-    import fitz  # PyMuPDF
+    import fitz
     _FITZ_AVAILABLE = True
 except ImportError:
     _FITZ_AVAILABLE = False
+
+try:
+    import numpy as np
+    _NUMPY_AVAILABLE = True
+except ImportError:
+    _NUMPY_AVAILABLE = False
+
+# Default dark-mode colors: dark gray background, light gray text.
+_DEFAULT_BG   = QColor(45,  45,  45)
+_DEFAULT_TEXT = QColor(220, 220, 220)
 
 
 class PDFViewer(QWidget):
@@ -19,18 +29,24 @@ class PDFViewer(QWidget):
 
     def __init__(self):
         super().__init__()
-        self._doc  = None
-        self._page = 0
+        self._doc        = None
+        self._page       = 0
+        self._continuous = False          # False = page-by-page, True = scroll all
+        self._bg_color   = QColor(_DEFAULT_BG)
+        self._text_color = QColor(_DEFAULT_TEXT)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # ── Page display ──────────────────────────────────────────────────────
+        # ── Scroll area (content) ─────────────────────────────────────────────
         self._scroll = QScrollArea()
         self._scroll.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._scroll.setWidgetResizable(False)
 
+        # _page_label is the persistent widget for page-by-page mode.
+        # We update its pixmap in-place rather than replacing the widget,
+        # which avoids QScrollArea.setWidget() repaint issues.
         self._page_label = QLabel(
             "Open a PDF file to begin." if _FITZ_AVAILABLE
             else "PyMuPDF is not installed.\n\nRun: pip install PyMuPDF"
@@ -44,10 +60,20 @@ class PDFViewer(QWidget):
         status.setFixedHeight(28)
         sl = QHBoxLayout(status)
         sl.setContentsMargins(6, 0, 6, 0)
-        sl.setSpacing(6)
+        sl.setSpacing(4)
 
+        # Mode toggle: page-by-page ↔ continuous scroll
+        self._mode_btn = QPushButton("≡")
+        self._mode_btn.setFixedSize(24, 22)
+        self._mode_btn.setToolTip("Switch between continuous scroll and page-by-page")
+        self._mode_btn.clicked.connect(self._toggle_mode)
+        sl.addWidget(self._mode_btn)
+
+        sl.addSpacing(4)
+
+        # Page navigation (hidden in continuous mode)
         self._prev_btn = QPushButton("◀")
-        self._prev_btn.setFixedWidth(28)
+        self._prev_btn.setFixedWidth(26)
         self._prev_btn.clicked.connect(self._prev_page)
         sl.addWidget(self._prev_btn)
 
@@ -57,11 +83,28 @@ class PDFViewer(QWidget):
         sl.addWidget(self._page_counter)
 
         self._next_btn = QPushButton("▶")
-        self._next_btn.setFixedWidth(28)
+        self._next_btn.setFixedWidth(26)
         self._next_btn.clicked.connect(self._next_page)
         sl.addWidget(self._next_btn)
 
         sl.addStretch()
+
+        # Color squares: background and text
+        sl.addWidget(QLabel("Colors:"))
+
+        self._bg_btn = QPushButton()
+        self._bg_btn.setFixedSize(18, 18)
+        self._bg_btn.setToolTip("Background color")
+        self._bg_btn.clicked.connect(self._pick_bg_color)
+        sl.addWidget(self._bg_btn)
+
+        self._text_btn = QPushButton()
+        self._text_btn.setFixedSize(18, 18)
+        self._text_btn.setToolTip("Text color")
+        self._text_btn.clicked.connect(self._pick_text_color)
+        sl.addWidget(self._text_btn)
+
+        sl.addSpacing(8)
         sl.addWidget(QLabel("Zoom:"))
 
         self._zoom_slider = QSlider(Qt.Orientation.Horizontal)
@@ -77,29 +120,141 @@ class PDFViewer(QWidget):
         sl.addWidget(self._zoom_label)
 
         layout.addWidget(status)
+
+        self._refresh_color_buttons()
         self._update_nav()
 
+    # ── Color helpers ─────────────────────────────────────────────────────────
+
+    def _refresh_color_buttons(self) -> None:
+        """Update the visual appearance of the two color square buttons."""
+        for btn, color in ((self._bg_btn, self._bg_color), (self._text_btn, self._text_color)):
+            btn.setStyleSheet(
+                f"background-color: {color.name()};"
+                f"border: 1px solid #888;"
+            )
+
+    def _pick_bg_color(self) -> None:
+        color = QColorDialog.getColor(self._bg_color, self, "Background Color")
+        if color.isValid():
+            self._bg_color = color
+            self._refresh_color_buttons()
+            self._render()
+
+    def _pick_text_color(self) -> None:
+        color = QColorDialog.getColor(self._text_color, self, "Text Color")
+        if color.isValid():
+            self._text_color = color
+            self._refresh_color_buttons()
+            self._render()
+
     # ── Rendering ─────────────────────────────────────────────────────────────
+
+    def _page_pixmap(self, page_idx: int) -> QPixmap:
+        """Render a single PDF page with the current color mapping applied."""
+        page  = self._doc[page_idx]
+        scale = 2.0 * (self._zoom_slider.value() / 100.0)
+        mat   = fitz.Matrix(scale, scale)
+
+        if _NUMPY_AVAILABLE:
+            # Render as grayscale, then remap to bg/text colors via numpy.
+            pix  = page.get_pixmap(matrix=mat, colorspace=fitz.csGRAY)
+            gray = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width)
+            # t=0 → black (text), t=1 → white (background)
+            t = gray.astype(np.float32) / 255.0
+            tx, bg = self._text_color, self._bg_color
+            r = (tx.red()   + (bg.red()   - tx.red())   * t).clip(0, 255).astype(np.uint8)
+            g = (tx.green() + (bg.green() - tx.green()) * t).clip(0, 255).astype(np.uint8)
+            b = (tx.blue()  + (bg.blue()  - tx.blue())  * t).clip(0, 255).astype(np.uint8)
+            # Store as member to keep the buffer alive while QImage reads it,
+            # then call img.copy() so Qt owns the data independently.
+            self._rgb_buf = np.ascontiguousarray(np.stack([r, g, b], axis=2))
+            img = QImage(self._rgb_buf.data, pix.width, pix.height, pix.width * 3,
+                         QImage.Format.Format_RGB888).copy()
+        else:
+            # Fallback: normal RGB render (no color mapping without numpy).
+            pix = page.get_pixmap(matrix=mat)
+            img = QImage(pix.samples, pix.width, pix.height, pix.stride,
+                         QImage.Format.Format_RGB888)
+
+        return QPixmap.fromImage(img)
 
     def _render(self) -> None:
         if not self._doc:
             return
-        page  = self._doc[self._page]
-        # Render at 2× base DPI so text stays crisp; zoom scales from there.
-        scale = 2.0 * (self._zoom_slider.value() / 100.0)
-        mat   = fitz.Matrix(scale, scale)
-        pix   = page.get_pixmap(matrix=mat)
-        img   = QImage(pix.samples, pix.width, pix.height, pix.stride,
-                       QImage.Format.Format_RGB888)
-        self._page_label.setPixmap(QPixmap.fromImage(img))
+        if self._continuous:
+            self._render_continuous()
+        else:
+            self._render_page()
+
+    def _render_page(self) -> None:
+        """Single-page mode: update the persistent page label in-place."""
+        # If continuous mode left a container in the scroll area, remove and
+        # delete it, then restore the persistent label.
+        if self._scroll.widget() is not self._page_label:
+            old = self._scroll.takeWidget()
+            if old:
+                old.deleteLater()
+            self._scroll.setWidget(self._page_label)
+
+        self._page_label.setPixmap(self._page_pixmap(self._page))
         self._page_label.adjustSize()
         self._update_nav()
 
+    def _render_continuous(self) -> None:
+        """Continuous mode: stack all pages vertically in a scroll area."""
+        # Detach the persistent page label (don't delete it — we'll restore it
+        # when the user switches back to page mode).
+        if self._scroll.widget() is self._page_label:
+            self._scroll.takeWidget()
+
+        # Remove any previous continuous container.
+        old = self._scroll.takeWidget()
+        if old:
+            old.deleteLater()
+
+        container = QWidget()
+        vbox = QVBoxLayout(container)
+        vbox.setContentsMargins(8, 8, 8, 8)
+        vbox.setSpacing(8)
+        vbox.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+
+        for i in range(len(self._doc)):
+            lbl = QLabel()
+            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            lbl.setPixmap(self._page_pixmap(i))
+            vbox.addWidget(lbl)
+
+        container.adjustSize()
+        self._scroll.setWidget(container)
+        self._update_nav()
+
+    # ── Navigation ────────────────────────────────────────────────────────────
+
     def _update_nav(self) -> None:
-        total = len(self._doc) if self._doc else 0
-        self._prev_btn.setEnabled(self._doc is not None and self._page > 0)
-        self._next_btn.setEnabled(self._doc is not None and self._page < total - 1)
-        self._page_counter.setText(f"{self._page + 1} / {total}" if self._doc else "–")
+        total    = len(self._doc) if self._doc else 0
+        paged    = not self._continuous
+        has_prev = self._doc is not None and self._page > 0
+        has_next = self._doc is not None and self._page < total - 1
+
+        self._prev_btn.setVisible(paged)
+        self._next_btn.setVisible(paged)
+        self._page_counter.setVisible(paged)
+        self._prev_btn.setEnabled(has_prev)
+        self._next_btn.setEnabled(has_next)
+
+        if self._doc:
+            text = f"{self._page + 1} / {total}" if paged else f"{total} pages"
+        else:
+            text = "–"
+        self._page_counter.setText(text)
+        self._page_counter.setVisible(True)   # always show the page count label
+
+        self._mode_btn.setText("□" if self._continuous else "≡")
+
+    def _toggle_mode(self) -> None:
+        self._continuous = not self._continuous
+        self._render()
 
     def _prev_page(self) -> None:
         if self._doc and self._page > 0:
@@ -141,10 +296,8 @@ class PDFViewer(QWidget):
         self._page = 0
         self._render()
 
-    # Stubs so the _FileEditor protocol is satisfied and the File menu doesn't
-    # try to call methods that don't apply to a read-only viewer.
-    def new_file(self) -> None:       pass
-    def save_file(self) -> None:      pass
-    def save_file_as(self) -> None:   pass
+    def new_file(self) -> None:          pass
+    def save_file(self) -> None:         pass
+    def save_file_as(self) -> None:      pass
     def export_as(self, _: str) -> None: pass
     def close_current_tab(self) -> None: pass
