@@ -16,7 +16,7 @@ from textEditors import (
     NoteEditor, NovelEditor, ScratchPadEditor,
     TimelineEditor, ScratchBoardEditor, CharacterEditor
 )
-from screenplay_editor import ScreenplayEditor, ELEMENT_NAMES, ELEMENT_ORDER
+from screenplay_editor import ScreenplayEditor, ScreenplaySettingsDialog, ELEMENT_NAMES, ELEMENT_ORDER
 from card_editor import CardEditor
 from pdf_viewer import PDFViewer
 
@@ -464,11 +464,21 @@ class MyMainWindow(QMainWindow):
 
         settings_menu = mb.addMenu("Settings")
         assert settings_menu
-        settings_menu.addAction(self._action("UI", self._on_settings_ui))
+        settings_menu.addAction(self._action("UI",         self._on_settings_ui))
+        settings_menu.addAction(self._action("Screenplay", self._on_settings_screenplay))
         mb.addMenu("Help")
 
     def _on_settings_ui(self) -> None:
         _UISettingsDialog(self).exec()
+
+    def _on_settings_screenplay(self) -> None:
+        dlg = ScreenplaySettingsDialog(self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            for panel in self._workspace._panels:
+                for i in range(panel._stack.count()):
+                    w = panel._stack.widget(i)
+                    if isinstance(w, ScreenplayEditor):
+                        w.reload_styles()
 
     def _action(self, label, slot):
         """Convenience: create a QAction with a connected slot."""

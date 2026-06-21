@@ -6,7 +6,8 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
     QTextEdit, QLabel, QSlider,
     QInputDialog, QFileDialog, QMessageBox,
-    QTabWidget, QTabBar
+    QTabWidget, QTabBar,
+    QDialog, QDialogButtonBox, QGridLayout, QSpinBox, QPushButton, QColorDialog
 )
 
 
@@ -93,6 +94,34 @@ _SCENE_PREFIXES = ("INT.", "EXT.", "EST.", "INT./EXT.", "I/E.", "INT/EXT")
 
 # Blank line not needed before these when they follow a character/dialogue block.
 _NO_BLANK_BEFORE = {DIALOGUE, PAREN}
+
+# ── Per-element style persistence ─────────────────────────────────────────────
+
+_ELEM_SKEY = {
+    SCENE: "scene", ACTION: "action", CHARACTER: "character",
+    DIALOGUE: "dialogue", PAREN: "paren", TRANSITION: "transition",
+}
+_STYLE_DEFAULT: dict[int, dict] = {el: {"size": 12.0, "color": None} for el in ELEMENT_ORDER}
+
+
+def _load_elem_styles() -> dict[int, dict]:
+    s = QSettings(APP_NAME, APP_NAME)
+    styles: dict[int, dict] = {}
+    for el in ELEMENT_ORDER:
+        k = _ELEM_SKEY[el]
+        size  = float(s.value(f"screenplay_style/{k}/size", 12.0))
+        cstr  = str(s.value(f"screenplay_style/{k}/color", ""))
+        styles[el] = {"size": size, "color": QColor(cstr) if cstr else None}
+    return styles
+
+
+def _save_elem_styles(styles: dict[int, dict]) -> None:
+    s = QSettings(APP_NAME, APP_NAME)
+    for el in ELEMENT_ORDER:
+        k = _ELEM_SKEY[el]
+        s.setValue(f"screenplay_style/{k}/size",  styles[el]["size"])
+        c = styles[el]["color"]
+        s.setValue(f"screenplay_style/{k}/color", c.name() if c else "")
 
 
 # ── Fountain serialiser ───────────────────────────────────────────────────────
@@ -318,7 +347,10 @@ class ScreenplayEdit(QTextEdit):
     def __init__(self):
         super().__init__()
         self.setFont(QFont("Courier New", 12))
-        # The first block starts as a Scene Heading.
+        self._scale = 1.0
+        self._elem_styles: dict[int, dict] = {
+            el: {"size": 12.0, "color": None} for el in ELEMENT_ORDER
+        }
         cursor = self.textCursor()
         self._apply_element(cursor, SCENE, convert=False)
         self.setTextCursor(cursor)
@@ -326,7 +358,6 @@ class ScreenplayEdit(QTextEdit):
     # ── Element type helpers ──────────────────────────────────────────────────
 
     def element_at(self, block=None) -> int:
-        """Return the element type stored on a block (default: cursor block)."""
         if block is None:
             block = self.textCursor().block()
         val = block.blockFormat().property(_ELEM_PROP)
@@ -335,41 +366,67 @@ class ScreenplayEdit(QTextEdit):
     def current_element(self) -> int:
         return self.element_at()
 
+    # ── Style helpers ─────────────────────────────────────────────────────────
+
+    def update_styles(self, styles: dict, scale: float) -> None:
+        self._elem_styles = styles
+        self._scale       = scale
+        self._reformat_all()
+
+    def update_scale(self, scale: float) -> None:
+        self._scale = scale
+        self._reformat_all()
+
+    def _char_fmt_for(self, el: int) -> QTextCharFormat:
+        fmt   = QTextCharFormat()
+        style = self._elem_styles[el]
+        fmt.setFontPointSize(max(6.0, style["size"] * self._scale))
+        fmt.setFontWeight(
+            QFont.Weight.Bold if el in (SCENE, CHARACTER) else QFont.Weight.Normal
+        )
+        if style["color"] is not None:
+            fmt.setForeground(style["color"])
+        return fmt
+
+    def _reformat_all(self) -> None:
+        saved = self.textCursor()
+        cur   = QTextCursor(self.document())
+        cur.beginEditBlock()
+        block = self.document().begin()
+        while block.isValid():
+            el  = self.element_at(block)
+            fmt = self._char_fmt_for(el)
+            cur.setPosition(block.position())
+            end = block.position() + block.length() - 1
+            if end > block.position():
+                cur.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
+                cur.setCharFormat(fmt)
+                cur.clearSelection()
+            self._apply_element(cur, el, convert=False)
+            block = block.next()
+        cur.endEditBlock()
+        self.setTextCursor(saved)
+
     # ── Formatting ────────────────────────────────────────────────────────────
 
     def _apply_element(self, cursor: QTextCursor, el: int, convert: bool = True) -> None:
-        """Apply block/char format for el at the cursor's current block.
-
-        When convert=True, existing block text is uppercased if el requires it.
-        """
         block_fmt = QTextBlockFormat()
-        char_fmt  = QTextCharFormat()
-
         block_fmt.setProperty(_ELEM_PROP, el)
-
         left, right = _MARGINS[el]
         block_fmt.setLeftMargin(left)
         block_fmt.setRightMargin(right)
-
         if el in (SCENE, TRANSITION):
             block_fmt.setTopMargin(14)
         elif el in (CHARACTER, ACTION):
             block_fmt.setTopMargin(7)
         else:
             block_fmt.setTopMargin(0)
-
-        if el in (SCENE, CHARACTER):
-            block_fmt.setAlignment(Qt.AlignmentFlag.AlignLeft)
-            char_fmt.setFontWeight(QFont.Weight.Bold)
-        elif el == TRANSITION:
-            block_fmt.setAlignment(Qt.AlignmentFlag.AlignRight)
-        else:
-            block_fmt.setAlignment(Qt.AlignmentFlag.AlignLeft)
-            char_fmt.setFontWeight(QFont.Weight.Normal)
-
+        block_fmt.setAlignment(
+            Qt.AlignmentFlag.AlignRight if el == TRANSITION
+            else Qt.AlignmentFlag.AlignLeft
+        )
         cursor.setBlockFormat(block_fmt)
-        cursor.setBlockCharFormat(char_fmt)
-
+        cursor.setBlockCharFormat(self._char_fmt_for(el))
         if convert and el in UPPERCASE_TYPES:
             self._uppercase_block(cursor)
 
@@ -451,6 +508,7 @@ class ScreenplayEditor(QWidget):
 
         self._untitled_counter = 0   # increments with each new tab, never resets
         self._paths: dict[ScreenplayEdit, str] = {}  # edit widget → saved file path
+        self._elem_styles = _load_elem_styles()
 
         # ── Status bar ───────────────────────────────────────────────────────
         status = QWidget()
@@ -489,13 +547,22 @@ class ScreenplayEditor(QWidget):
 
     def _on_scale_changed(self, value: int) -> None:
         self._scale_label.setText(f"{value}%")
-        size = max(6, int(self._BASE_FONT_SIZE * value / 100))
+        scale = value / 100.0
         for i in range(self._tabs.count()):
             w = self._tabs.widget(i)
             if isinstance(w, ScreenplayEdit):
-                font = w.font()
-                font.setPointSize(size)
-                w.setFont(font)
+                w.update_scale(scale)
+
+    def _apply_styles_to_all(self) -> None:
+        scale = self._scale_slider.value() / 100.0
+        for i in range(self._tabs.count()):
+            w = self._tabs.widget(i)
+            if isinstance(w, ScreenplayEdit):
+                w.update_styles(self._elem_styles, scale)
+
+    def reload_styles(self) -> None:
+        self._elem_styles = _load_elem_styles()
+        self._apply_styles_to_all()
 
     def _is_empty_untitled(self, edit: ScreenplayEdit) -> bool:
         """True when a tab is an unsaved placeholder with no content typed."""
@@ -512,15 +579,13 @@ class ScreenplayEditor(QWidget):
     def _add_tab(self) -> None:
         self._untitled_counter += 1
         edit = ScreenplayEdit()
-        font = edit.font()
-        font.setPointSize(self._current_font_size())
-        edit.setFont(font)
         edit.cursorPositionChanged.connect(
             lambda edit=edit: self._on_cursor_moved(edit)
         )
         edit.element_type_applied.connect(
             lambda el, edit=edit: self._on_element_applied(edit, el)
         )
+        edit.update_styles(self._elem_styles, self._scale_slider.value() / 100.0)
         self._tabs.addTab(edit, f"Untitled {self._untitled_counter}")
         self._tabs.setCurrentIndex(self._tabs.count() - 1)
         self._update_tab_closability()
@@ -688,3 +753,100 @@ class ScreenplayEditor(QWidget):
         idx = self._tabs.currentIndex()
         if idx > 0:   # tab 0 is permanent
             self._close_tab(idx)
+
+
+# ── Screenplay settings dialog ────────────────────────────────────────────────
+
+class ScreenplaySettingsDialog(QDialog):
+    """Per-element font size and color settings for the screenplay editor."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Screenplay Formatting")
+        self.setMinimumWidth(360)
+        self._styles = _load_elem_styles()
+
+        layout = QVBoxLayout(self)
+
+        grid = QGridLayout()
+        grid.setColumnStretch(0, 1)
+        grid.addWidget(QLabel("<b>Element</b>"),   0, 0)
+        grid.addWidget(QLabel("<b>Size (pt)</b>"), 0, 1)
+        grid.addWidget(QLabel("<b>Color</b>"),     0, 2)
+
+        self._spins: dict[int, QSpinBox]    = {}
+        self._color_btns: dict[int, QPushButton] = {}
+
+        for row, el in enumerate(ELEMENT_ORDER, start=1):
+            grid.addWidget(QLabel(ELEMENT_NAMES[el]), row, 0)
+
+            spin = QSpinBox()
+            spin.setRange(6, 72)
+            spin.setValue(int(self._styles[el]["size"]))
+            self._spins[el] = spin
+            grid.addWidget(spin, row, 1)
+
+            btn = QPushButton()
+            btn.setFixedWidth(60)
+            self._color_btns[el] = btn
+            self._refresh_color_btn(el)
+            btn.clicked.connect(lambda _, e=el: self._pick_color(e))
+            grid.addWidget(btn, row, 2)
+
+            clear = QPushButton("×")
+            clear.setFixedWidth(24)
+            clear.setToolTip("Reset to default color")
+            clear.clicked.connect(lambda _, e=el: self._clear_color(e))
+            grid.addWidget(clear, row, 3)
+
+        layout.addLayout(grid)
+
+        bottom = QHBoxLayout()
+        reset_btn = QPushButton("Reset All Defaults")
+        reset_btn.clicked.connect(self._reset_defaults)
+        bottom.addWidget(reset_btn)
+        bottom.addStretch()
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok |
+            QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self._on_accept)
+        buttons.rejected.connect(self.reject)
+        bottom.addWidget(buttons)
+        layout.addLayout(bottom)
+
+    def _refresh_color_btn(self, el: int) -> None:
+        btn = self._color_btns[el]
+        c   = self._styles[el]["color"]
+        if c is not None:
+            btn.setText("")
+            btn.setStyleSheet(f"background-color:{c.name()}; border:1px solid #888;")
+        else:
+            btn.setText("auto")
+            btn.setStyleSheet("border:1px solid #888;")
+
+    def _pick_color(self, el: int) -> None:
+        current = self._styles[el]["color"] or QColor(220, 220, 220)
+        c = QColorDialog.getColor(current, self, f"{ELEMENT_NAMES[el]} Color")
+        if c.isValid():
+            self._styles[el]["color"] = c
+            self._refresh_color_btn(el)
+
+    def _clear_color(self, el: int) -> None:
+        self._styles[el]["color"] = None
+        self._refresh_color_btn(el)
+
+    def _reset_defaults(self) -> None:
+        for el in ELEMENT_ORDER:
+            self._styles[el] = {"size": 12.0, "color": None}
+            self._spins[el].setValue(12)
+            self._refresh_color_btn(el)
+
+    def _on_accept(self) -> None:
+        for el in ELEMENT_ORDER:
+            self._styles[el]["size"] = float(self._spins[el].value())
+        _save_elem_styles(self._styles)
+        self.accept()
+
+    def styles(self) -> dict:
+        return self._styles
