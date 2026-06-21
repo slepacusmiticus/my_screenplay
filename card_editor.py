@@ -97,8 +97,9 @@ class CardEditor(QWidget):
     def open_file(self):
         self._add_tab(closable=True)
 
-    def save_file(self):    pass
-    def save_file_as(self): pass
+    def save_file(self):        pass
+    def save_file_as(self):     pass
+    def export_as(self, _: str) -> None: pass
 
     def close_current_tab(self):
         idx = self._tabs.currentIndex()

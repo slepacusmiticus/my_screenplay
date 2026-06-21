@@ -1,9 +1,12 @@
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QTextDocument
+import os
+from config import APP_NAME
+from PyQt6.QtCore import Qt, QSettings
+from PyQt6.QtGui import QTextDocument, QTextDocumentWriter
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
     QTextEdit, QLabel,
-    QTabWidget, QTabBar, QSlider, QInputDialog
+    QTabWidget, QTabBar, QSlider, QInputDialog,
+    QFileDialog, QMessageBox
 )
 
 
@@ -18,12 +21,14 @@ _DOC_REGISTRY: dict[tuple, QTextDocument] = {}
 # ── TabbedEditor ──────────────────────────────────────────────────────────────
 # Shared base class for all tabbed text editors.
 # Provides: tabbed pages, permanent first tab, incremented Untitled N naming,
-# scale slider status bar, and file operation stubs (new/open/save/close).
+# scale slider status bar, and file save/open/close operations.
+# Files are saved as HTML (.note) so rich formatting is fully preserved.
 # Subclasses only need to set `name` for the Panel dropdown label.
 
 class TabbedEditor(QWidget):
     name = ""
     _BASE_FONT_SIZE = 12   # point size at 100 %
+    _FILE_FILTER    = "Note files (*.note);;All files (*)"
 
     def __init__(self):
         super().__init__()
@@ -38,6 +43,7 @@ class TabbedEditor(QWidget):
         layout.addWidget(self._tabs)
 
         self._untitled_counter = 0   # increments with each new tab, never resets
+        self._paths: dict[QTextEdit, str] = {}  # editor widget → saved file path
 
         # ── Status bar ───────────────────────────────────────────────────────
         status = QWidget()
@@ -66,6 +72,8 @@ class TabbedEditor(QWidget):
         # Create the initial permanent tab and strip its close button.
         self._add_tab(closable=False)
 
+    # ── Internal helpers ──────────────────────────────────────────────────────
+
     def _add_tab(self, closable=True):
         self._untitled_counter += 1
         label = f"Untitled {self._untitled_counter}"
@@ -90,6 +98,9 @@ class TabbedEditor(QWidget):
         self._tabs.setCurrentIndex(idx)
 
     def _close_tab(self, index):
+        widget = self._tabs.widget(index)
+        if isinstance(widget, QTextEdit):
+            self._paths.pop(widget, None)
         self._tabs.removeTab(index)
 
     def _on_tab_double_clicked(self, index: int) -> None:
@@ -97,6 +108,10 @@ class TabbedEditor(QWidget):
         name, ok = QInputDialog.getText(self, "Rename Tab", "Name:", text=current)
         if ok and name.strip():
             self._tabs.setTabText(index, name.strip())
+
+    def _current_editor(self) -> QTextEdit | None:
+        w = self._tabs.currentWidget()
+        return w if isinstance(w, QTextEdit) else None
 
     def _current_font_size(self):
         return max(6, int(self._BASE_FONT_SIZE * self._scale_slider.value() / 100))
@@ -111,15 +126,138 @@ class TabbedEditor(QWidget):
                 font.setPointSize(size)
                 widget.setFont(font)
 
+    def _default_dir(self) -> str:
+        """Return the workspace folder set in UI Settings, or empty string."""
+        return QSettings(APP_NAME, APP_NAME).value("workspace_folder", "")
+
+    def _write(self, editor: QTextEdit, path: str) -> bool:
+        """Write editor content as HTML to path. Returns True on success."""
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(editor.toHtml())
+            return True
+        except OSError as e:
+            QMessageBox.warning(self, "Save Failed", str(e))
+            return False
+
+    # ── File operations ───────────────────────────────────────────────────────
+
     def new_file(self):
         self._add_tab(closable=True)
 
     def open_file(self):
-        # Placeholder — will open a file dialog and load content.
-        self._add_tab(closable=True)
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open File", self._default_dir(), self._FILE_FILTER
+        )
+        if not path:
+            return
+        try:
+            with open(path, encoding="utf-8") as f:
+                html = f.read()
+        except OSError as e:
+            QMessageBox.warning(self, "Open Failed", str(e))
+            return
 
-    def save_file(self):    pass
-    def save_file_as(self): pass
+        self._add_tab(closable=True)
+        editor = self._current_editor()
+        if editor:
+            editor.setHtml(html)
+            self._paths[editor] = path
+            self._tabs.setTabText(
+                self._tabs.currentIndex(),
+                os.path.splitext(os.path.basename(path))[0]
+            )
+
+    def save_file(self):
+        editor = self._current_editor()
+        if editor and editor in self._paths:
+            self._write(editor, self._paths[editor])
+        else:
+            self.save_file_as()
+
+    def save_file_as(self):
+        editor = self._current_editor()
+        if not editor:
+            return
+        default_name = self._tabs.tabText(self._tabs.currentIndex())
+        if not default_name.endswith(".note"):
+            default_name += ".note"
+        default_path = os.path.join(self._default_dir(), default_name)
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save File As", default_path, self._FILE_FILTER
+        )
+        if not path:
+            return
+        if not path.endswith(".note"):
+            path += ".note"
+        if self._write(editor, path):
+            self._paths[editor] = path
+            self._tabs.setTabText(
+                self._tabs.currentIndex(),
+                os.path.splitext(os.path.basename(path))[0]
+            )
+
+    def export_as(self, fmt: str) -> None:
+        """Export current tab to fmt: 'txt', 'odt', 'rtf', or 'docx'."""
+        editor = self._current_editor()
+        if not editor:
+            return
+
+        tab_name = self._tabs.tabText(self._tabs.currentIndex())
+
+        filters = {
+            "txt":  ("Export as Plain Text",       f"{tab_name}.txt",  "Text files (*.txt);;All files (*)"),
+            "odt":  ("Export as Open Document",    f"{tab_name}.odt",  "Open Document (*.odt);;All files (*)"),
+            "rtf":  ("Export as Rich Text",        f"{tab_name}.rtf",  "Rich Text (*.rtf);;All files (*)"),
+            "docx": ("Export as Word Document",    f"{tab_name}.docx", "Word Document (*.docx);;All files (*)"),
+        }
+        title, default_name, file_filter = filters[fmt]
+        default_path = os.path.join(self._default_dir(), default_name)
+
+        path, _ = QFileDialog.getSaveFileName(self, title, default_path, file_filter)
+        if not path:
+            return
+        if not path.endswith(f".{fmt}"):
+            path += f".{fmt}"
+
+        if fmt == "txt":
+            try:
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(editor.toPlainText())
+            except OSError as e:
+                QMessageBox.warning(self, "Export Failed", str(e))
+
+        elif fmt == "odt":
+            writer = QTextDocumentWriter(path, b"ODF")
+            if not writer.write(editor.document()):
+                QMessageBox.warning(self, "Export Failed", "Could not write ODF file.")
+
+        elif fmt == "rtf":
+            # Qt6 dropped native RTF support; generate a minimal valid RTF file.
+            text = editor.toPlainText()
+            safe = text.replace("\\", "\\\\").replace("{", "\\{").replace("}", "\\}")
+            body = "\\par\n".join(safe.split("\n"))
+            rtf = "{\\rtf1\\ansi\\deff0 " + body + "}"
+            try:
+                with open(path, "w", encoding="ascii", errors="replace") as f:
+                    f.write(rtf)
+            except OSError as e:
+                QMessageBox.warning(self, "Export Failed", str(e))
+
+        elif fmt == "docx":
+            try:
+                import docx  # python-docx
+                doc = docx.Document()
+                for line in editor.toPlainText().split("\n"):
+                    doc.add_paragraph(line)
+                doc.save(path)
+            except ImportError:
+                QMessageBox.warning(
+                    self, "Export Failed",
+                    "python-docx is not installed.\n\nInstall it with:\n  pip install python-docx"
+                )
+            except Exception as e:
+                QMessageBox.warning(self, "Export Failed", str(e))
 
     def close_current_tab(self):
         idx = self._tabs.currentIndex()

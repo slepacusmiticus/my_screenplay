@@ -18,6 +18,7 @@ from textEditors import (
 )
 from screenplay_editor import ScreenplayEditor, ELEMENT_NAMES, ELEMENT_ORDER
 from card_editor import CardEditor
+from pdf_viewer import PDFViewer
 
 
 # Structural protocol satisfied by TabbedEditor, ScreenplayEditor, and CardEditor.
@@ -28,6 +29,7 @@ class _FileEditor(Protocol):
     def open_file(self) -> None: ...
     def save_file(self) -> None: ...
     def save_file_as(self) -> None: ...
+    def export_as(self, fmt: str) -> None: ...
     def close_current_tab(self) -> None: ...
 
 
@@ -36,16 +38,8 @@ class _FileEditor(Protocol):
 # Add new editor types here — they'll automatically appear in every Panel's
 # type selector dropdown as long as they are added to the EDITORS list.
 
-class ImageViewer(QLabel):
-    name = "Image Viewer"
-
-    def __init__(self):
-        super().__init__("[ Image Viewer ]")
-        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-
 # Central registry — order here controls order in the dropdown.
-EDITORS = [NoteEditor, ScreenplayEditor, NovelEditor, ScratchPadEditor, CardEditor, TimelineEditor, ScratchBoardEditor, CharacterEditor, ImageViewer]
+EDITORS = [NoteEditor, ScreenplayEditor, NovelEditor, ScratchPadEditor, CardEditor, TimelineEditor, ScratchBoardEditor, CharacterEditor, PDFViewer]
 
 
 # ── Panel ─────────────────────────────────────────────────────────────────────
@@ -86,6 +80,12 @@ class Panel(QWidget):
         file_menu.addSeparator()
         file_menu.addAction("Save",    self._on_file_save)
         file_menu.addAction("Save As", self._on_file_save_as)
+        export_menu = file_menu.addMenu("Export")
+        assert export_menu
+        export_menu.addAction("Plain Text (.txt)",      lambda: self._on_file_export("txt"))
+        export_menu.addAction("Open Document (.odt)",   lambda: self._on_file_export("odt"))
+        export_menu.addAction("Rich Text (.rtf)",       lambda: self._on_file_export("rtf"))
+        export_menu.addAction("Word Document (.docx)",  lambda: self._on_file_export("docx"))
         file_menu.addSeparator()
         file_menu.addAction("Close",   self._on_file_close)
         file_btn.setMenu(file_menu)
@@ -180,6 +180,11 @@ class Panel(QWidget):
         editor = self._stack.currentWidget()
         if isinstance(editor, _FileEditor):
             editor.save_file_as()
+
+    def _on_file_export(self, fmt: str) -> None:
+        editor = self._stack.currentWidget()
+        if isinstance(editor, _FileEditor):
+            editor.export_as(fmt)
 
     def _on_file_close(self):
         editor = self._stack.currentWidget()

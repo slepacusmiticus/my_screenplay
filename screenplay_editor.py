@@ -1,6 +1,13 @@
-from PyQt6.QtCore import Qt, pyqtSignal
+import os
+from config import APP_NAME
+from PyQt6.QtCore import Qt, QSettings, pyqtSignal
 from PyQt6.QtGui import QFont, QTextBlockFormat, QTextCharFormat, QKeyEvent, QTextCursor
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QTextEdit, QLabel, QSlider, QInputDialog, QTabWidget, QTabBar
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout,
+    QTextEdit, QLabel, QSlider,
+    QInputDialog, QFileDialog, QMessageBox,
+    QTabWidget, QTabBar
+)
 
 
 # ── Element types ─────────────────────────────────────────────────────────────
@@ -27,7 +34,7 @@ NEXT_ON_ENTER = {
     SCENE:      ACTION,
     ACTION:     ACTION,
     CHARACTER:  DIALOGUE,
-    DIALOGUE:   CHARACTER,   # Tab overrides this to ACTION when needed
+    DIALOGUE:   CHARACTER,
     PAREN:      DIALOGUE,
     TRANSITION: SCENE,
 }
@@ -55,6 +62,220 @@ _MARGINS: dict[int, tuple[int, int]] = {
     PAREN:      (115, 137),  # col 16, width 25  → right = (60-41)*7.2
     TRANSITION: (0,   0),    # right-aligned via AlignRight
 }
+
+_SAVE_FILTER = "Fountain files (*.fountain);;All files (*)"
+_OPEN_FILTER = "Screenplay files (*.fountain *.celtx);;Fountain (*.fountain);;Celtx (*.celtx);;All files (*)"
+
+# Celtx HTML class names → our element types.
+_CELTX_CLASS_MAP: dict[str, int] = {
+    "sceneheading": SCENE,  "scene":         SCENE,
+    "action":       ACTION,
+    "character":    CHARACTER,
+    "dialog":       DIALOGUE, "dialogue":    DIALOGUE,
+    "parenthetical": PAREN,
+    "transition":   TRANSITION,
+    "shot":         SCENE,
+}
+
+# Standard scene heading prefixes recognised by the fountain spec.
+_SCENE_PREFIXES = ("INT.", "EXT.", "EST.", "INT./EXT.", "I/E.", "INT/EXT")
+
+# Blank line not needed before these when they follow a character/dialogue block.
+_NO_BLANK_BEFORE = {DIALOGUE, PAREN}
+
+
+# ── Fountain serialiser ───────────────────────────────────────────────────────
+
+def _to_fountain(document) -> str:
+    """Convert a QTextDocument to Fountain plain-text format.
+
+    Element types stored in each block's QTextBlockFormat property are used
+    to produce the correct Fountain syntax. Forcing prefixes (!, ., >, @) are
+    added only when the line would be misidentified without them.
+    """
+    lines: list[str] = []
+    prev_el: int | None = None
+
+    block = document.begin()
+    while block.isValid():
+        val = block.blockFormat().property(_ELEM_PROP)
+        el  = int(val) if val else ACTION
+        text = block.text()
+
+        # Blank line before major elements; omit between character/paren/dialogue.
+        if prev_el is not None and el not in _NO_BLANK_BEFORE:
+            lines.append("")
+
+        if el == SCENE:
+            upper = text.upper()
+            # Use '.' forced prefix if the heading doesn't open with INT./EXT./etc.
+            if not any(upper.startswith(p) for p in _SCENE_PREFIXES):
+                upper = "." + upper
+            lines.append(upper)
+
+        elif el == ACTION:
+            out = text
+            # All-caps action would be misread as a character cue — force with '!'.
+            stripped = out.strip()
+            if stripped and stripped == stripped.upper() and stripped.replace(" ", "").isalpha():
+                out = "!" + out
+            lines.append(out)
+
+        elif el == CHARACTER:
+            lines.append(text.upper())
+
+        elif el == DIALOGUE:
+            lines.append(text)
+
+        elif el == PAREN:
+            t = text.strip()
+            if not (t.startswith("(") and t.endswith(")")):
+                t = f"({t})"
+            lines.append(t)
+
+        elif el == TRANSITION:
+            upper = text.strip().upper()
+            # Standard fountain: all-caps ending in TO:. Use '>' prefix otherwise.
+            if not upper.endswith("TO:"):
+                upper = "> " + upper
+            lines.append(upper)
+
+        prev_el = el
+        block = block.next()
+
+    return "\n".join(lines)
+
+
+# ── Fountain parser ───────────────────────────────────────────────────────────
+
+def _parse_fountain(text: str) -> list[tuple[int, str]]:
+    """Parse Fountain plain text into a list of (element_type, text) pairs.
+
+    Blank lines are separators between elements and reset dialogue context;
+    they do not produce output blocks. Fountain forcing characters (!, ., >, @)
+    are stripped before the text is stored.
+    """
+    result: list[tuple[int, str]] = []
+    in_dialogue = False
+
+    for raw in text.split("\n"):
+        line = raw.rstrip()
+
+        # Blank line: separator only — resets dialogue context, no output block.
+        if not line.strip():
+            in_dialogue = False
+            continue
+
+        # Forced action: '!' prefix prevents all-caps lines being read as character.
+        if line.startswith("!"):
+            result.append((ACTION, line[1:]))
+            in_dialogue = False
+            continue
+
+        # Forced transition: '>' prefix (optional trailing '<' for centred text).
+        if line.startswith(">") and not line.endswith("<"):
+            result.append((TRANSITION, line[1:].strip().upper()))
+            in_dialogue = False
+            continue
+
+        # Forced scene heading: single '.' prefix (not '..' which is an ellipsis).
+        if line.startswith(".") and not line.startswith(".."):
+            result.append((SCENE, line[1:].upper()))
+            in_dialogue = False
+            continue
+
+        # Forced character: '@' prefix.
+        if line.startswith("@"):
+            result.append((CHARACTER, line[1:].upper()))
+            in_dialogue = True
+            continue
+
+        upper = line.upper()
+
+        # Standard scene heading: starts with a recognised prefix.
+        if any(upper.startswith(p) for p in _SCENE_PREFIXES):
+            result.append((SCENE, upper))
+            in_dialogue = False
+            continue
+
+        # Standard transition: all-caps line ending with TO:.
+        if line == upper and line.endswith("TO:"):
+            result.append((TRANSITION, upper))
+            in_dialogue = False
+            continue
+
+        # Inside a dialogue block.
+        if in_dialogue:
+            stripped = line.strip()
+            if stripped.startswith("(") and stripped.endswith(")"):
+                result.append((PAREN, stripped))
+            else:
+                result.append((DIALOGUE, line))
+            continue
+
+        # Character cue: all-caps non-empty line outside dialogue.
+        if line == upper and line.strip():
+            result.append((CHARACTER, upper))
+            in_dialogue = True
+            continue
+
+        # Everything else is action.
+        result.append((ACTION, line))
+        in_dialogue = False
+
+    return result
+
+
+# ── Celtx parser ──────────────────────────────────────────────────────────────
+
+def _parse_celtx(path: str) -> list[tuple[int, str]]:
+    """Parse a .celtx file (ZIP + embedded HTML) into (element_type, text) pairs.
+
+    Celtx stores the screenplay as an HTML file inside a ZIP archive. Element
+    types are identified by the CSS class on each <p> tag and mapped via
+    _CELTX_CLASS_MAP. Uses only stdlib (zipfile, html.parser) — no extra deps.
+    """
+    import zipfile
+    from html.parser import HTMLParser
+
+    class _CeltxParser(HTMLParser):
+        def __init__(self) -> None:
+            super().__init__(convert_charrefs=True)
+            self.result: list[tuple[int, str]] = []
+            self._el: int | None = None
+            self._buf: list[str] = []
+
+        def handle_starttag(self, tag: str, attrs: list) -> None:
+            if tag == "p":
+                cls = dict(attrs).get("class", "").lower().split()[0]
+                self._el = _CELTX_CLASS_MAP.get(cls)
+                self._buf = []
+
+        def handle_endtag(self, tag: str) -> None:
+            if tag == "p" and self._el is not None:
+                text = "".join(self._buf).strip().replace("\xa0", " ")
+                if text:
+                    self.result.append((self._el, text))
+                self._el = None
+
+        def handle_data(self, data: str) -> None:
+            if self._el is not None:
+                self._buf.append(data)
+
+    with zipfile.ZipFile(path) as zf:
+        # Pick the largest HTML file in the archive — that's the screenplay.
+        html_files = sorted(
+            [n for n in zf.namelist() if n.lower().endswith(".html")],
+            key=lambda n: zf.getinfo(n).file_size,
+            reverse=True,
+        )
+        if not html_files:
+            raise ValueError("No HTML content found inside the .celtx file.")
+        html = zf.read(html_files[0]).decode("utf-8", errors="replace")
+
+    parser = _CeltxParser()
+    parser.feed(html)
+    return parser.result
 
 
 # ── Core editor widget ────────────────────────────────────────────────────────
@@ -195,6 +416,7 @@ class ScreenplayEditor(QWidget):
         layout.addWidget(self._tabs)
 
         self._untitled_counter = 0   # increments with each new tab, never resets
+        self._paths: dict[ScreenplayEdit, str] = {}  # edit widget → saved file path
 
         # ── Status bar ───────────────────────────────────────────────────────
         status = QWidget()
@@ -222,6 +444,8 @@ class ScreenplayEditor(QWidget):
 
         # Create the initial permanent tab and strip its close button.
         self._add_tab(closable=False)
+
+    # ── Internal helpers ──────────────────────────────────────────────────────
 
     def _current_edit(self) -> ScreenplayEdit | None:
         w = self._tabs.currentWidget()
@@ -263,6 +487,9 @@ class ScreenplayEditor(QWidget):
         self._tabs.setCurrentIndex(idx)
 
     def _close_tab(self, index: int) -> None:
+        widget = self._tabs.widget(index)
+        if isinstance(widget, ScreenplayEdit):
+            self._paths.pop(widget, None)
         self._tabs.removeTab(index)
 
     def _on_tab_double_clicked(self, index: int) -> None:
@@ -270,6 +497,40 @@ class ScreenplayEditor(QWidget):
         name, ok = QInputDialog.getText(self, "Rename Tab", "Name:", text=current)
         if ok and name.strip():
             self._tabs.setTabText(index, name.strip())
+
+    def _default_dir(self) -> str:
+        return QSettings(APP_NAME, APP_NAME).value("workspace_folder", "")
+
+    def _write(self, edit: ScreenplayEdit, path: str) -> bool:
+        """Serialise edit's document to Fountain and write to path."""
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(_to_fountain(edit.document()))
+            return True
+        except OSError as e:
+            QMessageBox.warning(self, "Save Failed", str(e))
+            return False
+
+    def _load_elements(self, edit: ScreenplayEdit, elements: list[tuple[int, str]]) -> None:
+        """Populate edit's document from a parsed element list, replacing all content."""
+        edit.clear()
+        cursor = edit.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.Start)
+
+        for i, (el, text) in enumerate(elements):
+            if i > 0:
+                cursor.insertBlock()
+            edit._apply_element(cursor, el, convert=False)
+            # insertText with the block's char format so bold/weight is applied.
+            cursor.insertText(text, cursor.blockCharFormat())
+
+        cursor.movePosition(QTextCursor.MoveOperation.Start)
+        edit.setTextCursor(cursor)
+
+    def _load_fountain(self, edit: ScreenplayEdit, content: str) -> None:
+        self._load_elements(edit, _parse_fountain(content))
+
+    # ── Tab signal handlers ───────────────────────────────────────────────────
 
     def _on_tab_switched(self, _: int) -> None:
         edit = self._current_edit()
@@ -287,6 +548,8 @@ class ScreenplayEditor(QWidget):
         if self._tabs.currentWidget() is edit:
             self.element_changed.emit(el)
 
+    # ── Public API ────────────────────────────────────────────────────────────
+
     def current_element(self) -> int:
         """Return the element type of the active tab's current paragraph."""
         edit = self._current_edit()
@@ -301,12 +564,65 @@ class ScreenplayEditor(QWidget):
             edit.setTextCursor(cursor)
             edit.setFocus()
 
-    def new_file(self):
+    def new_file(self) -> None:
         self._add_tab(closable=True)
 
-    def open_file(self):        pass
-    def save_file(self):        pass
-    def save_file_as(self):     pass
+    def open_file(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open Screenplay", self._default_dir(), _OPEN_FILTER
+        )
+        if not path:
+            return
+
+        try:
+            if path.lower().endswith(".celtx"):
+                elements = _parse_celtx(path)
+            else:
+                with open(path, encoding="utf-8") as f:
+                    elements = _parse_fountain(f.read())
+        except Exception as e:
+            QMessageBox.warning(self, "Open Failed", str(e))
+            return
+
+        self._add_tab(closable=True)
+        edit = self._current_edit()
+        if edit:
+            self._load_elements(edit, elements)
+            self._paths[edit] = path
+            self._tabs.setTabText(
+                self._tabs.currentIndex(),
+                os.path.splitext(os.path.basename(path))[0]
+            )
+
+    def save_file(self) -> None:
+        edit = self._current_edit()
+        if edit and edit in self._paths:
+            self._write(edit, self._paths[edit])
+        else:
+            self.save_file_as()
+
+    def save_file_as(self) -> None:
+        edit = self._current_edit()
+        if not edit:
+            return
+        default_name = self._tabs.tabText(self._tabs.currentIndex()) + ".fountain"
+        default_path = os.path.join(self._default_dir(), default_name)
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save Screenplay", default_path, _SAVE_FILTER
+        )
+        if not path:
+            return
+        if not path.endswith(".fountain"):
+            path += ".fountain"
+        if self._write(edit, path):
+            self._paths[edit] = path
+            self._tabs.setTabText(
+                self._tabs.currentIndex(),
+                os.path.splitext(os.path.basename(path))[0]
+            )
+
+    def export_as(self, _: str) -> None:
+        pass   # placeholder — fountain is already a plain-text exchange format
 
     def close_current_tab(self) -> None:
         idx = self._tabs.currentIndex()
