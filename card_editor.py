@@ -6,13 +6,13 @@ from PyQt6.QtWidgets import (
 )
 
 
-# ── TextEditor ────────────────────────────────────────────────────────────────
-# A tabbed text editor. Each open file gets its own tab.
-# The first tab is permanent (no close button); all subsequent tabs are closable.
-# A status bar at the bottom holds a scale slider that zooms all tabs together.
+# ── CardEditor ────────────────────────────────────────────────────────────────
+# A tabbed editor for cards. Currently shares the same tabbed+scale behaviour
+# as TabbedEditor but is kept separate because card layout and interaction
+# will diverge significantly from plain text editors.
 
-class TextEditor(QWidget):
-    name = "Note"
+class CardEditor(QWidget):
+    name = "Card"
     _BASE_FONT_SIZE = 12   # point size at 100 %
 
     def __init__(self):
@@ -88,7 +88,6 @@ class TextEditor(QWidget):
         self._add_tab(closable=True)
 
     def open_file(self):
-        # Placeholder — will open a file dialog and load content.
         self._add_tab(closable=True)
 
     def save_file(self):    pass

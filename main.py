@@ -7,31 +7,21 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QMenuBar,
     QSplitter, QStackedWidget,
     QWidget, QVBoxLayout, QHBoxLayout,
-    QComboBox, QTextEdit, QLabel,
+    QComboBox, QLabel,
     QToolButton, QMenu
 )
-from text_editor import TextEditor
+from textEditors import (
+    TabbedEditor,
+    NoteEditor, ScreenplayEditor, NovelEditor, ScratchPadEditor,
+    TimelineEditor, ScratchBoardEditor, CharacterEditor
+)
+from card_editor import CardEditor
 
 
 # ── Editors ───────────────────────────────────────────────────────────────────
 # Each editor is a self-contained widget representing one type of content.
 # Add new editor types here — they'll automatically appear in every Panel's
 # type selector dropdown as long as they are added to the EDITORS list.
-
-class ScreenplayEditor(QTextEdit):
-    name = "Screenplay"
-
-class CardEditor(QTextEdit):
-    name = "Card"
-
-class TimelineEditor(QTextEdit):
-    name = "Timeline Editor"
-
-class ScratchBoardEditor(QTextEdit):
-    name = "Scratch Board"
-    
-class CharacterEditor(QTextEdit):
-    name = "Character Editor"
 
 class ImageViewer(QLabel):
     name = "Image Viewer"
@@ -42,7 +32,7 @@ class ImageViewer(QLabel):
 
 
 # Central registry — order here controls order in the dropdown.
-EDITORS = [TextEditor, ScreenplayEditor, CardEditor, TimelineEditor, ScratchBoardEditor, CharacterEditor, ImageViewer]
+EDITORS = [NoteEditor, ScreenplayEditor, NovelEditor, ScratchPadEditor, CardEditor, TimelineEditor, ScratchBoardEditor, CharacterEditor, ImageViewer]
 
 
 # ── Panel ─────────────────────────────────────────────────────────────────────
@@ -120,27 +110,27 @@ class Panel(QWidget):
 
     def _on_file_new(self):
         editor = self._stack.currentWidget()
-        if isinstance(editor, TextEditor):
+        if isinstance(editor, TabbedEditor):
             editor.new_file()
 
     def _on_file_open(self):
         editor = self._stack.currentWidget()
-        if isinstance(editor, TextEditor):
+        if isinstance(editor, TabbedEditor):
             editor.open_file()
 
     def _on_file_save(self):
         editor = self._stack.currentWidget()
-        if isinstance(editor, TextEditor):
+        if isinstance(editor, TabbedEditor):
             editor.save_file()
 
     def _on_file_save_as(self):
         editor = self._stack.currentWidget()
-        if isinstance(editor, TextEditor):
+        if isinstance(editor, TabbedEditor):
             editor.save_file_as()
 
     def _on_file_close(self):
         editor = self._stack.currentWidget()
-        if isinstance(editor, TextEditor):
+        if isinstance(editor, TabbedEditor):
             editor.close_current_tab()
 
 
