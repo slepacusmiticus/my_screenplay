@@ -476,8 +476,7 @@ class ScreenplayEditor(QWidget):
 
         layout.addWidget(status)
 
-        # Create the initial permanent tab and strip its close button.
-        self._add_tab(closable=False)
+        self._add_tab()
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 
@@ -498,33 +497,42 @@ class ScreenplayEditor(QWidget):
                 font.setPointSize(size)
                 w.setFont(font)
 
-    def _add_tab(self, closable: bool = True) -> None:
+    def _is_empty_untitled(self, edit: ScreenplayEdit) -> bool:
+        """True when a tab is an unsaved placeholder with no content typed."""
+        return (
+            edit not in self._paths
+            and edit.document().blockCount() == 1
+            and edit.document().firstBlock().text() == ""
+        )
+
+    def _update_tab_closability(self) -> None:
+        """Hide close buttons when only one tab remains so it can't be closed."""
+        self._tabs.setTabsClosable(self._tabs.count() > 1)
+
+    def _add_tab(self) -> None:
         self._untitled_counter += 1
         edit = ScreenplayEdit()
         font = edit.font()
         font.setPointSize(self._current_font_size())
         edit.setFont(font)
-        # cursorPositionChanged handles click/arrow navigation between blocks.
-        # element_type_applied handles Tab/Enter, which either don't move the
-        # cursor (Tab) or fire cursorPositionChanged before the format is set (Enter).
         edit.cursorPositionChanged.connect(
             lambda edit=edit: self._on_cursor_moved(edit)
         )
         edit.element_type_applied.connect(
             lambda el, edit=edit: self._on_element_applied(edit, el)
         )
-        idx = self._tabs.addTab(edit, f"Untitled {self._untitled_counter}")
-        if not closable:
-            bar = self._tabs.tabBar()
-            assert bar is not None
-            bar.setTabButton(idx, QTabBar.ButtonPosition.RightSide, None)
-        self._tabs.setCurrentIndex(idx)
+        self._tabs.addTab(edit, f"Untitled {self._untitled_counter}")
+        self._tabs.setCurrentIndex(self._tabs.count() - 1)
+        self._update_tab_closability()
 
     def _close_tab(self, index: int) -> None:
+        if self._tabs.count() <= 1:
+            return
         widget = self._tabs.widget(index)
         if isinstance(widget, ScreenplayEdit):
             self._paths.pop(widget, None)
         self._tabs.removeTab(index)
+        self._update_tab_closability()
 
     def _on_tab_double_clicked(self, index: int) -> None:
         current = self._tabs.tabText(index)
@@ -599,7 +607,7 @@ class ScreenplayEditor(QWidget):
             edit.setFocus()
 
     def new_file(self) -> None:
-        self._add_tab(closable=True)
+        self._add_tab()
 
     def open_file(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -621,18 +629,30 @@ class ScreenplayEditor(QWidget):
             QMessageBox.warning(self, "Open Failed", str(e))
             return
 
-        self._add_tab(closable=True)
+        # If the only open tab is the empty placeholder, replace it.
+        placeholder = self._current_edit()
+        replace = (
+            self._tabs.count() == 1
+            and placeholder is not None
+            and self._is_empty_untitled(placeholder)
+        )
+
+        self._add_tab()
         edit = self._current_edit()
         if edit:
             self._load_elements(edit, elements)
-            # Only track the path for native fountain files so that Save doesn't
-            # overwrite a .celtx / .html source file with fountain text.
             if ext == ".fountain":
                 self._paths[edit] = path
             self._tabs.setTabText(
                 self._tabs.currentIndex(),
                 os.path.splitext(os.path.basename(path))[0]
             )
+
+        if replace and placeholder is not None:
+            idx = self._tabs.indexOf(placeholder)
+            if idx >= 0:
+                self._tabs.removeTab(idx)
+            self._update_tab_closability()
 
     def save_file(self) -> None:
         edit = self._current_edit()
