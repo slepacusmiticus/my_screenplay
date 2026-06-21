@@ -351,8 +351,12 @@ class ScreenplayEdit(QTextEdit):
         block_fmt.setLeftMargin(left)
         block_fmt.setRightMargin(right)
 
-        # Visual blank line above scene headings and transitions.
-        block_fmt.setTopMargin(14 if el in (SCENE, TRANSITION) else 0)
+        if el in (SCENE, TRANSITION):
+            block_fmt.setTopMargin(14)
+        elif el in (CHARACTER, ACTION):
+            block_fmt.setTopMargin(7)
+        else:
+            block_fmt.setTopMargin(0)
 
         if el == SCENE:
             block_fmt.setAlignment(Qt.AlignmentFlag.AlignLeft)
