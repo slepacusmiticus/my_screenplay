@@ -358,7 +358,7 @@ class ScreenplayEdit(QTextEdit):
         else:
             block_fmt.setTopMargin(0)
 
-        if el == SCENE:
+        if el in (SCENE, CHARACTER):
             block_fmt.setAlignment(Qt.AlignmentFlag.AlignLeft)
             char_fmt.setFontWeight(QFont.Weight.Bold)
         elif el == TRANSITION:
