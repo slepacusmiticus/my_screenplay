@@ -1,6 +1,7 @@
 import sys
 import signal
 from PyQt6.QtCore import Qt
+from config import APP_NAME, WINDOW_WIDTH, WINDOW_HEIGHT
 from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QMenuBar,
@@ -95,7 +96,7 @@ class Panel(QWidget):
 #
 # To add a new layout:
 #   1. Add a set_<name>(self) method following the pattern below.
-#   2. Wire it up in MyMainWindow._build_menu().
+#   2. Wire it up in MyMainWindow._create_menu().
 
 class WorkspaceWidget(QWidget):
     def __init__(self, parent=None):
@@ -120,7 +121,7 @@ class WorkspaceWidget(QWidget):
         self._panels[1].set_editor(1)   # Script Editor — top-right
         self._panels[2].set_editor(2)   # Image Viewer  — bottom
 
-        self.set_three()
+        self.threePanelLayout1()
 
     def resizeEvent(self, a0):
         """Keep the root splitter filling the entire workspace on window resize.
@@ -201,7 +202,7 @@ class WorkspaceWidget(QWidget):
     # _save_current_sizes() must come before _detach_all() so the old splitter
     # is still intact when sizes are read.
 
-    def set_twov(self):
+    def verticalLayout1(self):
         """Two panels side by side (vertical divider)."""
         self._save_current_sizes()
         self._detach_all()
@@ -210,7 +211,7 @@ class WorkspaceWidget(QWidget):
         s.addWidget(self._panels[1])
         self._rebuild(s, [s], 'twov')
 
-    def set_twoh(self):
+    def horizontalLayout1(self):
         """Two panels stacked (horizontal divider)."""
         self._save_current_sizes()
         self._detach_all()
@@ -219,7 +220,7 @@ class WorkspaceWidget(QWidget):
         s.addWidget(self._panels[1])
         self._rebuild(s, [s], 'twoh')
 
-    def set_three(self):
+    def threePanelLayout1(self):
         """Two panels on top, one spanning the bottom. Default on startup."""
         self._save_current_sizes()
         self._detach_all()
@@ -239,13 +240,13 @@ class WorkspaceWidget(QWidget):
 class MyMainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("My App")
-        self.resize(900, 600)
+        self.setWindowTitle(APP_NAME)
+        self.resize(WINDOW_WIDTH, WINDOW_HEIGHT)
         self._workspace = WorkspaceWidget()
         self.setCentralWidget(self._workspace)
-        self._build_menu()
+        self._create_menu()
 
-    def _build_menu(self):
+    def _create_menu(self):
         mb = QMenuBar(self)
         self.setMenuBar(mb)
 
@@ -260,9 +261,9 @@ class MyMainWindow(QMainWindow):
 
         layout_menu = mb.addMenu("Layout")
         assert layout_menu
-        layout_menu.addAction(self._action("twov",  self._workspace.set_twov))
-        layout_menu.addAction(self._action("twoh",  self._workspace.set_twoh))
-        layout_menu.addAction(self._action("three", self._workspace.set_three))
+        layout_menu.addAction(self._action("twoPanVert1_Action",   self._workspace.verticalLayout1))
+        layout_menu.addAction(self._action("twoPanHoriz1_Action",  self._workspace.horizontalLayout1))
+        layout_menu.addAction(self._action("threePanLayout1_Action", self._workspace.threePanelLayout1))
 
     def _action(self, label, slot):
         """Convenience: create a QAction with a connected slot."""
