@@ -64,17 +64,20 @@ _MARGINS: dict[int, tuple[int, int]] = {
 }
 
 _SAVE_FILTER = "Fountain files (*.fountain);;All files (*)"
-_OPEN_FILTER = "Screenplay files (*.fountain *.celtx);;Fountain (*.fountain);;Celtx (*.celtx);;All files (*)"
+_OPEN_FILTER = (
+    "Screenplay files (*.fountain *.celtx *.html *.htm);;"
+    "Fountain (*.fountain);;Celtx (*.celtx);;HTML (*.html *.htm);;All files (*)"
+)
 
-# Celtx HTML class names → our element types.
-_CELTX_CLASS_MAP: dict[str, int] = {
-    "sceneheading": SCENE,  "scene":         SCENE,
+# CSS class names → element types (normalised: lowercase, hyphens/underscores removed).
+# Covers Celtx, Highland, Final Draft HTML exports, and common hand-written formats.
+_CLASS_MAP: dict[str, int] = {
+    "sceneheading": SCENE,  "scene": SCENE, "shot": SCENE, "slugline": SCENE,
     "action":       ACTION,
     "character":    CHARACTER,
-    "dialog":       DIALOGUE, "dialogue":    DIALOGUE,
-    "parenthetical": PAREN,
+    "dialog":       DIALOGUE, "dialogue": DIALOGUE,
+    "parenthetical": PAREN,  "paren": PAREN,
     "transition":   TRANSITION,
-    "shot":         SCENE,
 }
 
 # Standard scene heading prefixes recognised by the fountain spec.
@@ -226,19 +229,17 @@ def _parse_fountain(text: str) -> list[tuple[int, str]]:
     return result
 
 
-# ── Celtx parser ──────────────────────────────────────────────────────────────
+# ── HTML / Celtx parsers ──────────────────────────────────────────────────────
 
-def _parse_celtx(path: str) -> list[tuple[int, str]]:
-    """Parse a .celtx file (ZIP + embedded HTML) into (element_type, text) pairs.
+def _parse_html_content(html: str) -> list[tuple[int, str]]:
+    """Parse HTML with screenplay CSS classes into (element_type, text) pairs.
 
-    Celtx stores the screenplay as an HTML file inside a ZIP archive. Element
-    types are identified by the CSS class on each <p> tag and mapped via
-    _CELTX_CLASS_MAP. Uses only stdlib (zipfile, html.parser) — no extra deps.
+    Class names are normalised (lowercased, hyphens/underscores stripped) before
+    lookup in _CLASS_MAP, so scene-heading, sceneheading and scene_heading all work.
     """
-    import zipfile
     from html.parser import HTMLParser
 
-    class _CeltxParser(HTMLParser):
+    class _Parser(HTMLParser):
         def __init__(self) -> None:
             super().__init__(convert_charrefs=True)
             self.result: list[tuple[int, str]] = []
@@ -247,8 +248,9 @@ def _parse_celtx(path: str) -> list[tuple[int, str]]:
 
         def handle_starttag(self, tag: str, attrs: list) -> None:
             if tag == "p":
-                cls = dict(attrs).get("class", "").lower().split()[0]
-                self._el = _CELTX_CLASS_MAP.get(cls)
+                raw = dict(attrs).get("class", "").lower().split()[0]
+                cls = raw.replace("-", "").replace("_", "")
+                self._el = _CLASS_MAP.get(cls)
                 self._buf = []
 
         def handle_endtag(self, tag: str) -> None:
@@ -262,8 +264,21 @@ def _parse_celtx(path: str) -> list[tuple[int, str]]:
             if self._el is not None:
                 self._buf.append(data)
 
+    p = _Parser()
+    p.feed(html)
+    return p.result
+
+
+def _parse_html(path: str) -> list[tuple[int, str]]:
+    """Parse a plain .html screenplay file."""
+    with open(path, encoding="utf-8", errors="replace") as f:
+        return _parse_html_content(f.read())
+
+
+def _parse_celtx(path: str) -> list[tuple[int, str]]:
+    """Parse a .celtx file (ZIP + embedded HTML) into (element_type, text) pairs."""
+    import zipfile
     with zipfile.ZipFile(path) as zf:
-        # Pick the largest HTML file in the archive — that's the screenplay.
         html_files = sorted(
             [n for n in zf.namelist() if n.lower().endswith(".html")],
             key=lambda n: zf.getinfo(n).file_size,
@@ -272,10 +287,7 @@ def _parse_celtx(path: str) -> list[tuple[int, str]]:
         if not html_files:
             raise ValueError("No HTML content found inside the .celtx file.")
         html = zf.read(html_files[0]).decode("utf-8", errors="replace")
-
-    parser = _CeltxParser()
-    parser.feed(html)
-    return parser.result
+    return _parse_html_content(html)
 
 
 # ── Core editor widget ────────────────────────────────────────────────────────
@@ -574,9 +586,12 @@ class ScreenplayEditor(QWidget):
         if not path:
             return
 
+        ext = os.path.splitext(path)[1].lower()
         try:
-            if path.lower().endswith(".celtx"):
+            if ext == ".celtx":
                 elements = _parse_celtx(path)
+            elif ext in (".html", ".htm"):
+                elements = _parse_html(path)
             else:
                 with open(path, encoding="utf-8") as f:
                     elements = _parse_fountain(f.read())
