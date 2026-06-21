@@ -12,9 +12,10 @@ from PyQt6.QtWidgets import (
 )
 from textEditors import (
     TabbedEditor,
-    NoteEditor, ScreenplayEditor, NovelEditor, ScratchPadEditor,
+    NoteEditor, NovelEditor, ScratchPadEditor,
     TimelineEditor, ScratchBoardEditor, CharacterEditor
 )
+from screenplay_editor import ScreenplayEditor, ELEMENT_NAMES, ELEMENT_ORDER
 from card_editor import CardEditor
 
 
@@ -80,6 +81,16 @@ class Panel(QWidget):
 
         header_layout.addStretch()
 
+        # ── Element-type combo ───────────────────────────────────────────────
+        # Visible only when ScreenplayEditor is active. Shows the current
+        # paragraph element type and lets the user change it directly.
+        self._el_combo = QComboBox()
+        for el in ELEMENT_ORDER:
+            self._el_combo.addItem(ELEMENT_NAMES[el])
+        self._el_combo.hide()
+        self._el_combo.currentIndexChanged.connect(self._on_el_combo_changed)
+        header_layout.addWidget(self._el_combo)
+
         # ── Fullscreen button ────────────────────────────────────────────────
         # Square button — clicking it calls the workspace callback registered
         # via set_fullscreen_callback() to expand this panel to fill the workspace.
@@ -94,11 +105,41 @@ class Panel(QWidget):
         for cls in EDITORS:
             self._stack.addWidget(cls())
 
+        # Connect any ScreenplayEditor instances so the combo stays in sync
+        # when the cursor moves or Tab changes the element type.
+        for i in range(self._stack.count()):
+            w = self._stack.widget(i)
+            if isinstance(w, ScreenplayEditor):
+                w.element_changed.connect(self._on_screenplay_element_changed)
+
         layout.addWidget(header)
         layout.addWidget(self._stack)
 
     def _on_type_changed(self, index):
         self._stack.setCurrentIndex(index)
+        editor = self._stack.currentWidget()
+        if isinstance(editor, ScreenplayEditor):
+            self._el_combo.show()
+            self._sync_combo(editor.current_element())
+        else:
+            self._el_combo.hide()
+
+    def _sync_combo(self, el: int) -> None:
+        """Update the element combo to reflect el without triggering _on_el_combo_changed."""
+        self._el_combo.blockSignals(True)
+        self._el_combo.setCurrentIndex(ELEMENT_ORDER.index(el) if el in ELEMENT_ORDER else 0)
+        self._el_combo.blockSignals(False)
+
+    def _on_screenplay_element_changed(self, el: int) -> None:
+        """Slot called when the active ScreenplayEditor's cursor moves to a new element type."""
+        if isinstance(self._stack.currentWidget(), ScreenplayEditor):
+            self._sync_combo(el)
+
+    def _on_el_combo_changed(self, index: int) -> None:
+        """Slot called when the user picks an element type from the combo."""
+        editor = self._stack.currentWidget()
+        if isinstance(editor, ScreenplayEditor):
+            editor.set_element(ELEMENT_ORDER[index])
 
     def set_editor(self, index):
         """Set the active editor by EDITORS list index."""

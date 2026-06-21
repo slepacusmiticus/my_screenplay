@@ -127,10 +127,6 @@ class NoteEditor(TabbedEditor):
     name = "Note"
 
 
-class ScreenplayEditor(TabbedEditor):
-    name = "Screenplay"
-
-
 class NovelEditor(TabbedEditor):
     name = "Novel"
 
